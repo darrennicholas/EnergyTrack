@@ -22,7 +22,6 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/energytrack?schema=public
       SESSION_SECRET: ci-only-session-secret-value-with-more-than-32-characters
-      DEMO_PASSWORD: CI-demo-password-that-is-long-enough
       APP_ORIGINS: http://localhost:5173
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +49,7 @@ jobs:
         env:
           API_ORIGIN: http://127.0.0.1:3000
           ACCEPTANCE_EMAIL: admin@energitrack.local
-          ACCEPTANCE_PASSWORD: CI-demo-password-that-is-long-enough
+          ACCEPTANCE_PASSWORD: developer123
         run: npm run acceptance:smoke
       - name: Run domain acceptance suite
         env:
@@ -60,7 +59,7 @@ jobs:
         env:
           API_ORIGIN: http://127.0.0.1:3000
           ACCEPTANCE_EMAIL: admin@energitrack.local
-          ACCEPTANCE_PASSWORD: CI-demo-password-that-is-long-enough
+          ACCEPTANCE_PASSWORD: developer123
           SLO_CONCURRENCY: '10'
           SLO_ITERATIONS: '40'
           SLO_P95_LIMIT_MS: '500'
@@ -69,6 +68,6 @@ jobs:
         env:
           API_ORIGIN: http://127.0.0.1:3000
           ACCEPTANCE_EMAIL: admin@energitrack.local
-          ACCEPTANCE_PASSWORD: CI-demo-password-that-is-long-enough
+          ACCEPTANCE_PASSWORD: developer123
           ACCEPTANCE_RBAC_RUN: '1'
         run: npm run acceptance:rbac
