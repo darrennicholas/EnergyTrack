@@ -38,7 +38,8 @@ jobs:
       - run: npm run db:seed -w backend
       - name: Start API for acceptance smoke
         run: |
-          HOST=0.0.0.0 PORT=3000 npm run dev -w backend > /tmp/energytrack-api.log 2>&1 &
+          HOST=127.0.0.1 PORT=3000 node --import tsx backend/src/server.ts > /tmp/energytrack-api.log 2>&1 &
+          echo $! > /tmp/energytrack-api.pid
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:3000/api/v1/health/ready >/dev/null; then exit 0; fi
             sleep 1
@@ -70,4 +71,16 @@ jobs:
           ACCEPTANCE_EMAIL: admin@energitrack.local
           ACCEPTANCE_PASSWORD: developer123
           ACCEPTANCE_RBAC_RUN: '1'
-        run: npm run acceptance:rbac
+        run: |
+          kill "$(cat /tmp/energytrack-api.pid)"
+          for attempt in $(seq 1 30); do
+            if ! kill -0 "$(cat /tmp/energytrack-api.pid)" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          HOST=127.0.0.1 PORT=3000 node --import tsx backend/src/server.ts > /tmp/energytrack-api-rbac.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3000/api/v1/health/ready >/dev/null; then npm run acceptance:rbac; exit $?; fi
+            sleep 1
+          done
+          cat /tmp/energytrack-api-rbac.log
+          exit 1
