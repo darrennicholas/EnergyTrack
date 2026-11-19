@@ -1,0 +1,65 @@
+name: EnergyTrack Backup and Restore Drill
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_restore_drill:
+        description: Restore latest off-site backup into the isolated DRILL_DATABASE_URL
+        type: boolean
+        default: false
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      BACKUP_DIR: ${{ runner.temp }}/energytrack-backup
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.BACKUP_AWS_REGION || 'us-east-1' }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      S3_ENDPOINT_URL: ${{ secrets.BACKUP_S3_ENDPOINT_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client and AWS CLI
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client awscli
+      - name: Create and checksum encrypted backup
+        run: sh scripts/backup-postgres.sh
+      - name: Upload off-site with server-side encryption
+        run: |
+          set -eu
+          for file in "$BACKUP_DIR"/*; do
+            [ -f "$file" ] || continue
+            if [ -n "$S3_ENDPOINT_URL" ]; then aws --endpoint-url "$S3_ENDPOINT_URL" s3 cp "$file" "s3://$S3_BUCKET/energytrack/$(basename "$file")" --sse AES256
+            else aws s3 cp "$file" "s3://$S3_BUCKET/energytrack/$(basename "$file")" --sse AES256; fi
+          done
+  restore-drill:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_restore_drill }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DRILL_DATABASE_URL: ${{ secrets.DRILL_DATABASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.BACKUP_AWS_REGION || 'us-east-1' }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      S3_ENDPOINT_URL: ${{ secrets.BACKUP_S3_ENDPOINT_URL }}
+      BACKUP_DIR: ${{ runner.temp }}/energytrack-backup
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client and AWS CLI
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client awscli
+      - name: Download latest checksum and dump
+        run: |
+          set -eu
+          mkdir -p "$BACKUP_DIR"
+          if [ -n "$S3_ENDPOINT_URL" ]; then aws --endpoint-url "$S3_ENDPOINT_URL" s3 cp "s3://$S3_BUCKET/energytrack/" "$BACKUP_DIR/" --recursive --exclude '*' --include 'energytrack-*.dump' --include 'energytrack-*.dump.sha256'
+          else aws s3 cp "s3://$S3_BUCKET/energytrack/" "$BACKUP_DIR/" --recursive --exclude '*' --include 'energytrack-*.dump' --include 'energytrack-*.dump.sha256'; fi
+          dump=$(find "$BACKUP_DIR" -type f -name 'energytrack-*.dump' | sort -r | head -1)
+          test -n "$dump"
+          echo "BACKUP_FILE=$dump" >> "$GITHUB_ENV"
+      - name: Restore into isolated database and verify
+        run: sh scripts/restore-drill-postgres.sh

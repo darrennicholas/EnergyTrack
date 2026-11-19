@@ -1,0 +1,1 @@
+ALTER TABLE "ImportJob" ALTER COLUMN "createdBy" DROP NOT NULL;

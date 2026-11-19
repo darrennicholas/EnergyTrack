@@ -1,0 +1,30 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+describe('S3-compatible private object storage signing', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules() })
+  it('creates a path-style SigV4 request with a payload hash and private bucket path', async () => {
+    vi.stubEnv('OBJECT_STORAGE_ENDPOINT', 'https://objects.example.test')
+    vi.stubEnv('OBJECT_STORAGE_BUCKET', 'energytrack-private')
+    vi.stubEnv('OBJECT_STORAGE_ACCESS_KEY', 'test-access')
+    vi.stubEnv('OBJECT_STORAGE_SECRET_KEY', 'test-secret')
+    vi.stubEnv('OBJECT_STORAGE_REGION', 'test-region')
+    vi.stubEnv('NODE_ENV', 'test')
+    const { createSignedObjectRequest } = await import('./object-storage.js')
+    const request = createSignedObjectRequest('PUT', 'tenant/report one.csv', Buffer.from('private contents'), 'text/csv', new Date('2026-11-18T09:40:00.000Z'))
+    expect(request.url.pathname).toBe('/energytrack-private/tenant/report%20one.csv')
+    expect(request.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=test-access\/20261118\/test-region\/s3\/aws4_request, SignedHeaders=/)
+    expect(request.headers['x-amz-content-sha256']).toBe('3ef9175c6124c3fefca31b1bdabd631c1232a6f610e264698b921adfc46ff68b')
+    expect(request.headers['content-type']).toBe('text/csv')
+  })
+  it('rejects traversal, unconfigured storage, and production insecure endpoints', async () => {
+    vi.stubEnv('OBJECT_STORAGE_ENDPOINT', 'http://objects.example.test')
+    vi.stubEnv('OBJECT_STORAGE_BUCKET', 'bucket')
+    vi.stubEnv('OBJECT_STORAGE_ACCESS_KEY', 'access')
+    vi.stubEnv('OBJECT_STORAGE_SECRET_KEY', 'secret')
+    vi.stubEnv('OBJECT_STORAGE_REGION', 'test-region')
+    vi.stubEnv('NODE_ENV', 'production')
+    const { createSignedObjectRequest } = await import('./object-storage.js')
+    expect(() => createSignedObjectRequest('GET', '../secret')).toThrow('INVALID_OBJECT_KEY')
+    expect(() => createSignedObjectRequest('GET', 'ok/file')).toThrow('OBJECT_STORAGE_TLS_REQUIRED')
+  })
+})

@@ -1,0 +1,74 @@
+name: EnergyTrack CI
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: energytrack
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d energytrack"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/energytrack?schema=public
+      SESSION_SECRET: ci-only-session-secret-value-with-more-than-32-characters
+      DEMO_PASSWORD: CI-demo-password-that-is-long-enough
+      APP_ORIGINS: http://localhost:5173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run contract:openapi
+      - run: npx prisma generate --schema backend/prisma/schema.prisma
+      - run: npm run test -w backend
+      - run: npm run build
+      - run: npx prisma migrate deploy --schema backend/prisma/schema.prisma
+      - run: npm run db:seed -w backend
+      - name: Start API for acceptance smoke
+        run: |
+          HOST=0.0.0.0 PORT=3000 npm run dev -w backend > /tmp/energytrack-api.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3000/api/v1/health/ready >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/energytrack-api.log
+          exit 1
+      - name: Run API acceptance smoke
+        env:
+          API_ORIGIN: http://127.0.0.1:3000
+          ACCEPTANCE_EMAIL: admin@energitrack.local
+          ACCEPTANCE_PASSWORD: CI-demo-password-that-is-long-enough
+        run: npm run acceptance:smoke
+      - name: Run domain acceptance suite
+        env:
+          TEST_API_URL: http://127.0.0.1:3000
+        run: npm run acceptance:domain
+      - name: Measure API dashboard P95 under concurrent load
+        env:
+          API_ORIGIN: http://127.0.0.1:3000
+          ACCEPTANCE_EMAIL: admin@energitrack.local
+          ACCEPTANCE_PASSWORD: CI-demo-password-that-is-long-enough
+          SLO_CONCURRENCY: '10'
+          SLO_ITERATIONS: '40'
+          SLO_P95_LIMIT_MS: '500'
+        run: npm run acceptance:slo
+      - name: Run RBAC and tenant isolation acceptance
+        env:
+          API_ORIGIN: http://127.0.0.1:3000
+          ACCEPTANCE_EMAIL: admin@energitrack.local
+          ACCEPTANCE_PASSWORD: CI-demo-password-that-is-long-enough
+          ACCEPTANCE_RBAC_RUN: '1'
+        run: npm run acceptance:rbac

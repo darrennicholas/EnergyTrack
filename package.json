@@ -1,0 +1,25 @@
+{
+  "name": "energytrack",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c green,cyan \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "test": "npm run test -w backend",
+    "db:migrate": "npm run db:migrate -w backend",
+    "db:seed": "npm run db:seed -w backend",
+    "db:seed:examples": "npm run db:seed:examples -w backend",
+    "db:setup": "node scripts/setup-db.mjs",
+    "acceptance:smoke": "node scripts/acceptance-smoke.mjs",
+    "acceptance:domain": "node scripts/smoke-import.mjs",
+    "acceptance:rbac": "node scripts/acceptance-rbac.mjs",
+    "acceptance:slo": "node scripts/load-slo.mjs",
+    "contract:openapi": "node scripts/generate-openapi.mjs && node scripts/check-openapi.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
