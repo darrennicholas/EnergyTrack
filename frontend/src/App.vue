@@ -3,13 +3,15 @@ import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } fr
 import { ArrowUpRight } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQueryClient } from '@tanstack/vue-query'
-import { useWorkspaceStore, type SessionUser } from './stores'
-import DataSources from './components/DataSources.vue'
+import { useWorkspaceStore, type SessionUser } from './stores/workspace'
+import { request, listRequest, setCsrfTokenProvider } from './lib/api/client'
+import { fetchCached } from './lib/api/queries'
+import DataSources from './components/data/DataSources.vue'
 import Input from './components/ui/Input.vue'
 import DashboardScreen from './components/screens/DashboardScreen.vue'
 import SiteDetailTabs from './components/screens/SiteDetailTabs.vue'
-import WorkspaceLayout from './components/WorkspaceLayout.vue'
-const EnergyChart = defineAsyncComponent(() => import('./components/EnergyChart.vue'))
+import WorkspaceLayout from './layouts/WorkspaceLayout.vue'
+const EnergyChart = defineAsyncComponent(() => import('./components/data/EnergyChart.vue'))
 
 type Site = { id: string; code: string; name: string; type: string; address: string; timezone: string; status: string }
 type Meter = { id: string; code: string; meterType: string; metric: string; unit: string; status: string; site: Site; readings: { timestamp:string;value:string;unit:string;quality:string }[]; assetId?:string; serialNumber?:string }
@@ -200,14 +202,9 @@ function reloadCurrentList(){if(page.value==='Sites'||page.value==='Meters')void
 function toggleSort(key:string){sortState.value=sortState.value.key===key?{key,direction:sortState.value.direction==='asc'?'desc':'asc'}:{key,direction:'asc'};currentPage.value=1;reloadCurrentList()}
 function sortedLabel(key:string,label:string){return `${label}${sortState.value.key===key?(sortState.value.direction==='asc'?' ↑':' ↓'):''}`}
 const listPageCount=computed(()=>page.value==='Sites'||page.value==='Meters'?catalogPageCount.value:serverPageActive.value?serverPageCount.value:Math.max(1,Math.ceil(filteredRecords.value.length/pageSize.value)))
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = new Headers(options.headers); if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json'); if (user.value?.csrfToken) headers.set('X-CSRF-Token', user.value.csrfToken)
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'same-origin' })
-  if (response.status === 204) return undefined as T
-  const json = await response.json(); if (!response.ok) { const fields = json.error?.fields; const labels: Record<string, string> = {code:'Kode site',name:'Nama',type:'Tipe',address:'Alamat',timezone:'Zona waktu',latitude:'Latitude',longitude:'Longitude',managerId:'Site manager',emissionRegion:'Wilayah emisi'}; const details = fields ? Object.entries(fields).flatMap(([field, messages]) => (Array.isArray(messages) ? messages : [messages]).map(message => `${labels[field] || field}: ${message === 'Invalid' ? 'format tidak valid.' : message}`)).join(' ') : ''; throw new Error(details || json.error?.message || 'Permintaan gagal.') }; return json.data as T
-}
-async function listRequest<T=any>(path:string):Promise<T[]> { const separator=path.includes('?')?'&':'?',data=await request<any>(`${path}${separator}page=1&pageSize=100`);return Array.isArray(data)?data:(Array.isArray(data?.items)?data.items:[]) }
-function cachedRequest<T>(key:string,path:string) { return queryClient.fetchQuery({queryKey:['api',user.value?.id,user.value?.organization?.id,key],queryFn:()=>request<T>(path),staleTime:30_000}) }
+// The API client reads the CSRF token through this provider so client.ts stays free of store imports.
+setCsrfTokenProvider(() => user.value?.csrfToken)
+function cachedRequest<T>(key: string, path: string) { return fetchCached<T>(queryClient, { userId: user.value?.id, organizationId: user.value?.organization?.id }, [key], path) }
 async function refresh() { [sites.value, meters.value,buildings.value] = await Promise.all([workspaceStore.hasAnyPermission(['site.read','sites.manage']) ? cachedRequest<Site[]>('sites','/sites') : Promise.resolve([]), workspaceStore.hasAnyPermission(['meter.read','meter.manage']) ? cachedRequest<Meter[]>('meters','/meters') : Promise.resolve([]), workspaceStore.hasAnyPermission(['site.read','asset.manage']) ? cachedRequest<any[]>('buildings','/buildings') : Promise.resolve([])]) }
 async function loadCatalog(){const isSites=page.value==='Sites';if(!isSites&&page.value!=='Meters')return;loadingCatalog.value=true;try{const values:Record<string,string>={page:String(currentPage.value),pageSize:String(pageSize.value),sortBy:sortState.value.key,sortOrder:sortState.value.direction,...(search.value.trim()?{search:search.value.trim()}:{})};if(!isSites&&meterSite.value!=='ALL')values.siteId=meterSite.value;if(!isSites&&meterStatus.value!=='ALL')values.status=meterStatus.value;const result=await request<any>(`/${isSites?'sites':'meters'}?${new URLSearchParams(values)}`);if(result&&Array.isArray(result.items)){if(isSites)siteRows.value=result.items;else meterRows.value=result.items;catalogTotal.value=result.pagination.total;catalogPageCount.value=Math.max(1,result.pagination.pageCount)}else{if(isSites)siteRows.value=result;else meterRows.value=result;catalogTotal.value=result.length;catalogPageCount.value=Math.max(1,Math.ceil(result.length/pageSize.value))}}catch(e){error.value=(e as Error).message}finally{loadingCatalog.value=false}}
 function scopedQuery(base:Record<string,string|number|boolean>={}) { const query=new URLSearchParams(); for(const [key,value] of Object.entries(base)) if(value!=='' && value!==false && value!==undefined) query.set(key,String(value)); return query.toString() }

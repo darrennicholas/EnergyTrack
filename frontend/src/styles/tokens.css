@@ -1,0 +1,20 @@
+/* Design tokens for the dark emerald industrial SaaS theme (FSD section 4.2).
+   Single source of truth for color, radius, and typography variables. */
+:root {
+  --font-ui: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-sans: var(--font-ui);
+  --background: #071411;
+  --foreground: #e6f5eb;
+  --card: #101f1b;
+  --card-foreground: #e6f5eb;
+  --muted: #142a22;
+  --muted-foreground: #9cb5a8;
+  --primary: #20d595;
+  --primary-foreground: #062117;
+  --secondary: #10251d;
+  --secondary-foreground: #d6e9df;
+  --destructive: #a83c34;
+  --border: #254037;
+  --ring: #20d595;
+  --radius: .625rem;
+}

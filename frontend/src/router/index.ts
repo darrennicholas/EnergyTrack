@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import App from './App.vue'
-import { useWorkspaceStore } from './stores'
+import App from '../App.vue'
+import { useWorkspaceStore } from '../stores/workspace'
 
 // Route metadata also drives menu access checks. Backend authorization remains authoritative.
 const screens = [

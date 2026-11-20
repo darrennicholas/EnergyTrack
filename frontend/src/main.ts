@@ -1,7 +1,7 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query'
-import Root from './Root.vue'
+import Root from './app/Root.vue'
 import { router } from './router'
 import './style.css'
 import { globalSelect } from './lib/globalSelect'
