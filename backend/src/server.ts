@@ -21,6 +21,7 @@ import { estimateEmissions, estimateEmissionsByYear } from './emissions.js'
 import { evaluateAlerts, evaluateScheduledAlerts } from './alerts.js'
 import { promoteFreshMeters, sweepMeterHealth } from './meter-health.js'
 import { readingIdentity } from './reading-identity.js'
+import { multiplierAt } from './services/meter-configuration.js'
 import { detectReadingIssues } from './reading-quality.js'
 import { createPdfReport, createXlsxReport, reportColumns } from './report-files.js'
 import { reportRetry } from './report-retry.js'
@@ -832,7 +833,8 @@ api.post('/meters/:id/readings/:readingId/revisions', auth, csrf, admin, wrap(as
   if (!meter) return fail(res, 404, 'NOT_FOUND', 'Meter tidak ditemukan.')
   const reading = await db.meterReading.findFirst({ where: { id: req.params.readingId, meterId: meter.id, organizationId: org } })
   if (!reading) return fail(res, 404, 'NOT_FOUND', 'Bacaan tidak ditemukan.')
-  const corrected = new Prisma.Decimal(input.value).mul(meter.multiplier)
+  const versions = await db.meterConfigVersion.findMany({ where: { organizationId: org, meterId: meter.id }, orderBy: { effectiveFrom: 'desc' }, select: { multiplier: true, effectiveFrom: true, effectiveTo: true } })
+  const corrected = new Prisma.Decimal(input.value).mul(multiplierAt(reading.timestamp, versions, meter.multiplier))
   if (corrected.gte('100000000000000')) return fail(res, 422, 'VALIDATION_ERROR', 'Nilai setelah multiplier terlalu besar.')
   const revised = await db.$transaction(async tx => {
     const locked = await tx.$queryRaw<{ value: Prisma.Decimal }[]>`SELECT "value" FROM "MeterReading" WHERE "id" = ${reading.id}::uuid AND "organizationId" = ${org}::uuid FOR UPDATE`

@@ -29,10 +29,15 @@ export function registerDataSourceRoutes(api: Router, { db, auth, csrf, wrap, ok
   api.post('/data-sources', auth, csrf, wrap(async (req, res) => {
     const input = z.object({ name: z.string().trim().min(2).max(100), type: z.enum(['MANUAL', 'CSV', 'API', 'SIMULATOR']), description: z.string().trim().max(500).optional() }).strict().parse(req.body)
     const org = res.locals.user.organizationId
-    const existing = await db.$queryRaw<{ id: string }[]>`SELECT "id" FROM "IntegrationSource" WHERE "organizationId" = ${org}::uuid AND lower("name") = lower(${input.name}) LIMIT 1`
+    const existing = await db.$queryRaw<{ id: string }[]>`SELECT "id" FROM "IntegrationSource" WHERE "organizationId" = ${org}::uuid AND lower(btrim("name")) = lower(${input.name}) LIMIT 1`
     if (existing.length) return fail(res, 409, 'CONFLICT', 'Nama sumber sudah digunakan.')
-    const rows = await db.$queryRaw`INSERT INTO "IntegrationSource" ("id", "organizationId", "name", "type", "description") VALUES (gen_random_uuid(), ${org}::uuid, ${input.name}, ${input.type}, ${input.description || null}) RETURNING "id", "name", "type", "description", "status", "createdAt"`
-    return ok(res, (rows as unknown[])[0], 201)
+    try {
+      const rows = await db.$queryRaw`INSERT INTO "IntegrationSource" ("id", "organizationId", "name", "type", "description") VALUES (gen_random_uuid(), ${org}::uuid, ${input.name}, ${input.type}, ${input.description || null}) RETURNING "id", "name", "type", "description", "status", "createdAt"`
+      return ok(res, (rows as unknown[])[0], 201)
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === 'P2002' || (error.code === 'P2010' && error.meta?.code === '23505'))) return fail(res, 409, 'CONFLICT', 'Nama sumber sudah digunakan.')
+      throw error
+    }
   }))
 
   api.patch('/data-sources/:id', auth, csrf, wrap(async (req, res) => {

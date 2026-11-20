@@ -2,6 +2,7 @@ import { Prisma, PrismaClient } from '@prisma/client'
 import { parse } from 'csv-parse/sync'
 import { z } from 'zod'
 import { readingIdentity } from '../reading-identity.js'
+import { multiplierAt } from './meter-configuration.js'
 
 export type CsvPreviewRow = { meterId: string; externalId: string; timestamp: Date; rawValue: string; value: Prisma.Decimal; unit: string }
 
@@ -16,7 +17,7 @@ export async function validateCsvPreview(db: PrismaClient, csv: string, orgId: s
     return { error: 'Format CSV tidak valid. Gunakan header meterCode,timestamp,rawValue,unit,metric,externalReadingId.' } as const
   }
   if (!rows.length || rows.length > 5000) return { error: 'CSV harus berisi 1–5000 baris.' } as const
-  const meters = await db.meter.findMany({ where: { organizationId: orgId, code: { in: [...new Set(rows.map(row => row.meterCode).filter(Boolean))] }, status: { not: 'RETIRED' }, ...(allowedSiteIds ? { siteId: { in: allowedSiteIds } } : {}) } })
+  const meters = await db.meter.findMany({ where: { organizationId: orgId, code: { in: [...new Set(rows.map(row => row.meterCode).filter(Boolean))] }, status: { not: 'RETIRED' }, ...(allowedSiteIds ? { siteId: { in: allowedSiteIds } } : {}) }, include: { configurationVersions: { orderBy: { effectiveFrom: 'desc' }, select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } })
   const byCode = new Map(meters.map(meter => [meter.code, meter]))
   const errors: { row: number; message: string }[] = [], rejectedRows: { payload: Prisma.InputJsonObject; reason: string }[] = [], valid: CsvPreviewRow[] = []
   const rejectRow = (rowNumber: number, row: Record<string, string>, message: string) => { errors.push({ row: rowNumber, message }); rejectedRows.push({ payload: { rowNumber, values: row }, reason: message }) }
@@ -29,7 +30,7 @@ export async function validateCsvPreview(db: PrismaClient, csv: string, orgId: s
     if (row.unit !== meter.unit) { rejectRow(index + 2, row, 'Unit tidak sesuai konfigurasi meter.'); return }
     const time = new Date(row.timestamp), suppliedId = row.externalReadingId?.trim(), externalId = suppliedId ? `source:${sourceId}:${suppliedId}` : readingIdentity(meter.id, time, rawValue, row.unit, sourceId)
     if (externalId.length > 200) { rejectRow(index + 2, row, 'External ID terlalu panjang.'); return }
-    const value = new Prisma.Decimal(rawValue).mul(meter.multiplier)
+    const value = new Prisma.Decimal(rawValue).mul(multiplierAt(time, meter.configurationVersions, meter.multiplier))
     if (value.gte('100000000000000')) { rejectRow(index + 2, row, 'Nilai setelah multiplier terlalu besar.'); return }
     valid.push({ meterId: meter.id, externalId, timestamp: time, rawValue, value, unit: row.unit })
   })
