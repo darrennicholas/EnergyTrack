@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url'
 
 const routeSources = await Promise.all([
   'server.ts',
-  'routes/administration.ts',
-  'routes/data-sources.ts',
-  'routes/forecast.ts',
-  'routes/reading-preview.ts',
+  'modules/administration/routes/index.ts',
+  'modules/data-sources/routes/index.ts',
+  'modules/forecast/routes/index.ts',
+  'modules/ingestion/routes/reading-preview.ts',
 ].map(path => readFile(new URL(`../backend/src/${path}`, import.meta.url), 'utf8')))
 const routes = routeSources.flatMap(source => [...source.matchAll(/\b(?:api|app)\.(get|post|patch|put|delete)\('([^']+)'/g)])
 const publicPaths = new Set(['/auth/login', '/auth/forgot-password', '/auth/reset-password', '/auth/accept-invitation', '/ingestion/device-readings', '/api/v1/reports/:id/signed-download', '/health/live', '/health/ready'])
@@ -79,6 +79,7 @@ const bodyContracts = {
   'PATCH /api/v1/sites/{id}': object({ code: string({ pattern: '^[A-Z0-9-]+$' }), name: string({ minLength: 2, maxLength: 200 }), type: string({ enum: ['FACTORY', 'OFFICE', 'COMMERCIAL', 'WAREHOUSE', 'OTHER'] }), address: string({ minLength: 10, maxLength: 500 }), timezone: string(), latitude: { type: ['number', 'null'], minimum: -90, maximum: 90 }, longitude: { type: ['number', 'null'], minimum: -180, maximum: 180 }, operatingSchedule: { type: ['array', 'null'], maxItems: 21, items: object({ dayOfWeek: { type: 'integer', minimum: 0, maximum: 6 }, start: string({ pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d$' }), end: string({ pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d$' }) }, ['dayOfWeek', 'start', 'end']) }, managerId: { ...uuid, type: ['string', 'null'] }, emissionRegion: { ...string({ minLength: 2, maxLength: 150 }), type: ['string', 'null'] }, status: string({ enum: ['ACTIVE', 'INACTIVE'], default: 'ACTIVE' }) }),
 }
 const queryContracts = {
+  'GET /api/v1/alerts': [{ name: 'status', schema: string({ enum: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RESOLVED', 'FALSE_POSITIVE'] }) }, { name: 'severity', schema: string({ enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] }) }],
   'GET /api/v1/buildings': [{ name: 'siteId', schema: uuid }],
   'GET /api/v1/meters/{id}/readings': [{ name: 'limit', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } }, { name: 'cursor', schema: uuid }],
   'GET /api/v1/data-quality': [{ name: 'siteId', schema: uuid }, { name: 'meterId', schema: uuid }, { name: 'days', schema: { type: 'integer', minimum: 1, maximum: 366, default: 30 } }, { name: 'periodStart', schema: isoDateTime }, { name: 'periodEnd', schema: isoDateTime }],
@@ -131,6 +132,7 @@ const responseContracts = {
   'POST /api/v1/forecast-drivers': { $ref: '#/components/schemas/ForecastDriverSaveResult' },
   'POST /api/v1/forecast-drivers/weather-sync': { $ref: '#/components/schemas/WeatherSyncResult' },
 }
+const successEnvelope = data => ({ type: 'object', required: ['success', 'data'], properties: { success: { const: true }, data }, additionalProperties: false })
 const resourceForPath = path => {
   if (path.endsWith('/analytics/forecast-runs')) return 'ForecastRun'
   if (path.endsWith('/readings')) return 'MeterReading'
@@ -196,7 +198,6 @@ for (const [, method, expressPath] of routes) {
     responses: {
       '200': { description: 'Operation succeeded', content: { 'application/json': { schema: { $ref: '#/components/schemas/SuccessEnvelope' } } } },
       '201': { description: 'Resource created', content: { 'application/json': { schema: { $ref: '#/components/schemas/SuccessEnvelope' } } } },
-      '202': { description: 'Operation accepted for asynchronous processing', content: { 'application/json': { schema: { $ref: '#/components/schemas/SuccessEnvelope' } } } },
       '204': { description: 'Operation succeeded without a response body' },
       '400': { description: 'Malformed request' },
       '401': { description: 'Authentication required' },
@@ -234,27 +235,22 @@ for (const [, method, expressPath] of routes) {
   const requestKey = `${method.toUpperCase()} ${path}`
   let responseContract = responseContracts[requestKey] || (resourceForPath(path) ? { $ref: `#/components/schemas/${resourceForPath(path)}` } : { $ref: '#/components/schemas/OperationResult' })
   if (responseContract && operation.responses['200'].content?.['application/json']) {
-    operation.responses['200'].content['application/json'].schema = { allOf: [{ $ref: '#/components/schemas/SuccessEnvelope' }, { type: 'object', properties: { data: responseContract } }] }
-    operation.responses['201'].content['application/json'].schema = { allOf: [{ $ref: '#/components/schemas/SuccessEnvelope' }, { type: 'object', properties: { data: responseContract } }] }
+    operation.responses['200'].content['application/json'].schema = successEnvelope(responseContract)
+    operation.responses['201'].content['application/json'].schema = successEnvelope(responseContract)
     operation['x-response-contract-status'] = 'documented-operation-response'
   }
   if (method === 'get' && sourcePath === '/meters/:id/readings') {
-    operation.responses['200'].content['application/json'].schema = { allOf: [{ $ref: '#/components/schemas/SuccessEnvelope' }, { type: 'object', properties: { data: { $ref: '#/components/schemas/ReadingPage' } } }] }
+    operation.responses['200'].content['application/json'].schema = successEnvelope({ $ref: '#/components/schemas/ReadingPage' })
     operation['x-response-contract-status'] = 'documented-reading-cursor-page'
   } else if (method === 'get' && pagedGetPaths.has(path)) {
-    const itemSchema = resourceForPath(path) ? { $ref: `#/components/schemas/${resourceForPath(path)}` } : { $ref: '#/components/schemas/JSONValue' }
-    operation.responses['200'].content['application/json'].schema = {
-      allOf: [
-        { $ref: '#/components/schemas/SuccessEnvelope' },
-        { type: 'object', properties: { data: { oneOf: [{ type: 'object', required: ['items', 'pagination'], properties: { items: { type: 'array', items: itemSchema }, pagination: { $ref: '#/components/schemas/PageMeta' } } }, { type: 'array', items: itemSchema }] } } },
-      ],
-    }
+    const itemSchema = resourceForPath(path) ? { $ref: `#/components/schemas/${resourceForPath(path)}` } : { $ref: '#/components/schemas/OperationResult' }
+    operation.responses['200'].content['application/json'].schema = successEnvelope({ oneOf: [{ type: 'object', required: ['items', 'pagination'], properties: { items: { type: 'array', items: itemSchema }, pagination: { $ref: '#/components/schemas/PageMeta' } }, additionalProperties: false }, { type: 'array', items: itemSchema }] })
     operation['x-response-contract-status'] = 'documented-paginated-entity-response'
   } else if (operation.responses['200'].content?.['application/json']) {
     if (method === 'get' && resourceForPath(path) && !responseContracts[requestKey]) responseContract = { type: 'array', items: { $ref: `#/components/schemas/${resourceForPath(path)}` } }
     if (!operation.responses['200'].content?.['application/json']) operation.responses['200'].content = { 'application/json': {} }
-    operation.responses['200'].content['application/json'].schema = { allOf: [{ $ref: '#/components/schemas/SuccessEnvelope' }, { type: 'object', properties: { data: responseContract } }] }
-    operation.responses['201'].content['application/json'].schema = { allOf: [{ $ref: '#/components/schemas/SuccessEnvelope' }, { type: 'object', properties: { data: responseContract } }] }
+    operation.responses['200'].content['application/json'].schema = successEnvelope(responseContract)
+    operation.responses['201'].content['application/json'].schema = successEnvelope(responseContract)
     operation['x-response-contract-status'] = 'documented-endpoint-response'
   }
   if (sourcePath === '/health/metrics') {
@@ -269,8 +265,11 @@ for (const [, method, expressPath] of routes) {
   }
   if (sourcePath === '/auth/forgot-password') {
     delete operation.responses['200']; delete operation.responses['201']
-    operation.responses['202'] = { description: 'Password reset request accepted', content: { 'application/json': { schema: { allOf: [{ $ref: '#/components/schemas/SuccessEnvelope' }, { type: 'object', properties: { data: { $ref: '#/components/schemas/MessageResponse' } } }] } } } }
+    operation.responses['202'] = { description: 'Password reset request accepted', content: { 'application/json': { schema: successEnvelope({ $ref: '#/components/schemas/MessageResponse' }) } } }
     operation['x-response-contract-status'] = 'documented-accepted-response'
+  }
+  if (['/reading-imports', '/reading-imports/:id/confirm', '/reports'].includes(sourcePath)) {
+    operation.responses['202'] = { description: 'Operation accepted for asynchronous processing', content: { 'application/json': { schema: successEnvelope(responseContract) } } }
   }
   if (['/auth/reset-password', '/auth/change-password', '/auth/logout'].includes(sourcePath)) {
     delete operation.responses['200']; delete operation.responses['201']; delete operation.responses['202']
@@ -310,7 +309,7 @@ for (const [, method, expressPath] of routes) {
 
 const document = {
   openapi: '3.1.0',
-  info: { title: 'EnergiTrack API', version: '1.1.0', description: 'OpenAPI route inventory generated from Express declarations. Request schemas are endpoint-specific where documented. Pagination and meter reading cursor response envelopes are typed; most domain response payloads remain JSONValue until their endpoint-specific contracts are added. See docs/api.md for current business rules.' },
+  info: { title: 'EnergiTrack API', version: '1.1.0', description: 'OpenAPI route inventory generated from Express declarations with operation-specific success response data schemas. Request schemas and pagination are endpoint-specific where documented. See docs/api.md for current business rules.' },
   servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development' }],
   paths,
   components: {
@@ -336,14 +335,14 @@ const document = {
       ForecastDriverSaveResult: { type: 'object', required: ['saved', 'rows'], properties: { saved: { type: 'integer', minimum: 0 }, rows: { type: 'array', items: { $ref: '#/components/schemas/ForecastDriver' } } } },
       WeatherSyncResult: { type: 'object', required: ['provider', 'variable', 'unit', 'siteId', 'imported', 'rows', 'attribution'], properties: { provider: { const: 'OPEN_METEO' }, variable: { const: 'temperature_2m_mean' }, unit: { const: '°C' }, siteId: uuid, imported: { type: 'integer' }, rows: { type: 'array', items: { $ref: '#/components/schemas/ForecastDriver' } }, attribution: string() } },
       PageMeta: { type: 'object', required: ['page', 'pageSize', 'total', 'pageCount', 'sortBy', 'sortOrder'], properties: { page: { type: 'integer', minimum: 1 }, pageSize: { type: 'integer', minimum: 1, maximum: 100 }, total: { type: 'integer', minimum: 0 }, pageCount: { type: 'integer', minimum: 0 }, sortBy: { type: 'string' }, sortOrder: { type: 'string', enum: ['asc', 'desc'] }, sort: { type: 'string', description: 'Legacy alias for sortBy.' }, direction: { type: 'string', enum: ['asc', 'desc'], description: 'Legacy alias for sortOrder.' }, search: { type: ['string', 'null'] } }, additionalProperties: false },
-      PageEnvelope: { type: 'object', required: ['items', 'pagination'], properties: { items: { type: 'array', items: { $ref: '#/components/schemas/JSONValue' } }, pagination: { $ref: '#/components/schemas/PageMeta' } }, additionalProperties: false },
+      PageEnvelope: { type: 'object', required: ['items', 'pagination'], properties: { items: { type: 'array', items: { $ref: '#/components/schemas/OperationResult' } }, pagination: { $ref: '#/components/schemas/PageMeta' } }, additionalProperties: false },
       ReadingPage: { type: 'object', required: ['items', 'hasMore', 'nextCursor'], properties: { items: { type: 'array', items: { $ref: '#/components/schemas/MeterReading' } }, hasMore: { type: 'boolean' }, nextCursor: { type: ['string', 'null'], format: 'uuid' } }, additionalProperties: false },
       HealthStatus: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['LIVE', 'READY'] } }, additionalProperties: false },
       MonitoringPoint: { type: 'object', required: ['date', 'kwh', 'unit', 'quality'], properties: { date: string(), kwh: { type: 'number' }, unit: string({ enum: ['kWh', 'kW'] }), quality: string(), readingCount: { type: 'integer', minimum: 0 }, expectedReadingCount: { type: 'integer', minimum: 0 }, completenessPercent: { type: ['number', 'null'], minimum: 0, maximum: 100 }, resetCount: { type: 'integer', minimum: 0 }, rolloverCount: { type: 'integer', minimum: 0 }, aggregateVersion: { type: 'integer', minimum: 1 }, source: string({ enum: ['PERSISTENT_ROLLUP'] }) }, additionalProperties: false },
       MonitoringSummary: { type: 'object', required: ['siteCount', 'meterCount', 'openAlerts', 'metric', 'siteRanking', 'periodStart', 'periodEnd', 'timezone'], properties: { siteCount: { type: 'integer' }, meterCount: { type: 'integer' }, openAlerts: { type: 'integer' }, metric: string({ enum: ['ENERGY_IMPORT', 'POWER_DEMAND'] }), energyKwh: { type: ['number', 'null'] }, peakDemandKw: { type: ['string', 'null'] }, estimatedCostIdr: { type: ['string', 'null'] }, completenessPercent: { type: ['number', 'null'] }, expectedReadings: { type: 'integer' }, observedReadings: { type: 'integer' }, siteRanking: { type: 'array', items: { type: 'object', properties: { siteId: uuid, siteName: string(), energyKwh: { type: 'number' } }, required: ['siteId', 'siteName', 'energyKwh'] } }, periodStart: isoDateTime, periodEnd: isoDateTime, timezone: string(), comparison: { anyOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, note: string() }, additionalProperties: false },
       ForecastResponse: { type: 'object', required: ['model', 'siteId', 'timezone', 'unit'], properties: { model: string({ enum: ['MOVING_AVERAGE', 'EXPONENTIAL_SMOOTHING', 'COMPARE', 'EXOGENOUS_LINEAR'] }), result: { type: 'object', additionalProperties: true }, movingAverage: { anyOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, exponentialSmoothing: { anyOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, comparison: { anyOf: [{ type: 'array', items: { type: 'object', additionalProperties: true } }, { type: 'null' }] }, siteId: uuid, meterId: { type: ['string', 'null'], format: 'uuid' }, timezone: string(), unit: string(), note: string(), trainingStart: localDate, trainingEnd: localDate }, additionalProperties: true },
       ForecastRun: { type: 'object', required: ['id', 'organizationId', 'siteId', 'model', 'result', 'createdAt'], properties: { id: uuid, organizationId: uuid, siteId: uuid, meterId: { type: ['string', 'null'], format: 'uuid' }, requestedBy: uuid, model: string(), parameters: { type: 'object', additionalProperties: true }, result: { type: 'object', additionalProperties: true }, createdAt: isoDateTime }, additionalProperties: true },
-      SuccessEnvelope: { type: 'object', required: ['success', 'data'], properties: { success: { const: true }, data: { $ref: '#/components/schemas/JSONValue' } } },
+      SuccessEnvelope: { type: 'object', required: ['success', 'data'], properties: { success: { const: true }, data: {} }, additionalProperties: false },
       ErrorEnvelope: { type: 'object', required: ['success', 'error'], properties: { success: { const: false }, error: { type: 'object', required: ['code', 'message'], properties: { code: { type: 'string' }, message: { type: 'string' }, fields: { type: 'object', additionalProperties: { type: 'string' } } } } } },
     },
   },

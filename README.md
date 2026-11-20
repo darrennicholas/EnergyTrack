@@ -30,7 +30,7 @@ Persyaratan: Node.js 20 atau lebih baru, npm, PostgreSQL aktif pada port 5432, d
    npm run dev
    ```
 
-   API berjalan di `http://127.0.0.1:3000`. Buka URL frontend yang ditampilkan Vite, biasanya `http://127.0.0.1:5173`; jika port dipakai, Vite dapat memilih port berikutnya seperti 5174. Bila mengatur `APP_ORIGINS` sendiri, sertakan origin frontend yang digunakan.
+   API berjalan di `http://127.0.0.1:3000` dan frontend di `http://127.0.0.1:5173`. Vite berhenti jika port 5173 sudah dipakai agar API proxy dan origin tetap sesuai. Bila mengatur `APP_ORIGINS` sendiri, sertakan origin frontend yang digunakan.
 
 Akun awal lokal: `admin@energitrack.local`, password `developer123`. Seed juga membuat satu akun untuk setiap role bawaan. Password ini khusus pengembangan lokal; seed menolak berjalan dalam mode production. Data contoh tambahan bersifat ilustrasi dan dapat ditambahkan dengan `npm run db:seed:examples`. File `backend/.env` berisi kredensial lokal dan tidak boleh diunggah.
 

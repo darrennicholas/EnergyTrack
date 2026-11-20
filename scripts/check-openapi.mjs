@@ -7,7 +7,13 @@ for (const { path, method, operation } of operations) {
   const success = operation.responses?.['200']
   if (!operation['x-response-contract-status']) failures.push(`${method.toUpperCase()} ${path}: missing response contract status`)
   if (!Object.values(success?.content ?? {}).some(content => content.schema) && !operation.responses?.['204']) failures.push(`${method.toUpperCase()} ${path}: missing success response schema`)
-  if (JSON.stringify(success?.content ?? {}).includes('#/components/schemas/JSONValue')) failures.push(`${method.toUpperCase()} ${path}: generic JSONValue success response`)
+  for (const [status, response] of Object.entries(operation.responses ?? {})) {
+    if (!['200', '201', '202'].includes(status)) continue
+    const schema = response.content?.['application/json']?.schema
+    if (!schema) continue
+    if (schema.allOf || schema.properties?.success?.const !== true || !schema.required?.includes('data') || !schema.properties?.data || (Object.keys(schema.properties.data).length === 0)) failures.push(`${method.toUpperCase()} ${path}: ${status} response needs a concrete success/data envelope`)
+    if (JSON.stringify(schema.properties?.data ?? {}).includes('#/components/schemas/JSONValue')) failures.push(`${method.toUpperCase()} ${path}: generic JSONValue success response`)
+  }
   if (operation['x-contract-status'] === 'placeholder-request-schema') failures.push(`${method.toUpperCase()} ${path}: placeholder request body`)
   if (operation['x-response-contract-status'] === 'documented-paginated-entity-response') {
     const parameters = new Set(operation.parameters?.filter(parameter => parameter.in === 'query').map(parameter => parameter.name))

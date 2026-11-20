@@ -20,6 +20,8 @@
     "contract:openapi": "node scripts/generate-openapi.mjs && node scripts/check-openapi.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@playwright/cli": "^0.1.25",
+    "concurrently": "^9.1.2",
+    "playwright": "^1.65.1"
   }
 }

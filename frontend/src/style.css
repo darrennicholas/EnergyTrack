@@ -343,3 +343,37 @@ html,.app-sidebar,.table-wrap{scroll-behavior:smooth}
 .app-main .content{animation:page-arrive 2s cubic-bezier(.16,1,.3,1)}
 @keyframes page-arrive{from{opacity:.7;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 @media(prefers-reduced-motion:reduce){html,.app-sidebar,.table-wrap{scroll-behavior:auto}.app-main .content{animation:none}}
+
+/* Keep the shared shell and domain workspaces composed at every viewport. */
+.app-main,.app-main>header,.content,.dashboard-grid,.site-distribution,.content:not(:has(.dashboard-screen)) .panel{min-width:0}
+.app-main>header>div:last-child{flex:none;white-space:nowrap}
+.content:not(:has(.dashboard-screen)) .page-heading{gap:16px}
+.content:not(:has(.dashboard-screen)) .page-heading h1{line-height:1.12}
+.content:not(:has(.dashboard-screen)) .table-toolbar{min-width:0;row-gap:12px}
+.content:not(:has(.dashboard-screen)) .filter-row{grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));align-items:end}
+.content:not(:has(.dashboard-screen)) :is(input:not([type=checkbox]),textarea,.global-select-trigger){transition:border-color .16s ease,background-color .16s ease,box-shadow .16s ease}
+.content:not(:has(.dashboard-screen)) :is(input:not([type=checkbox]),textarea):hover{border-color:#3b6f58}
+.content:not(:has(.dashboard-screen)) :is(.primary,.secondary){transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .16s ease}
+.content:not(:has(.dashboard-screen)) .primary:hover:not(:disabled),.content:not(:has(.dashboard-screen)) .secondary:hover:not(:disabled){transform:translateY(-1px)}
+.content:not(:has(.dashboard-screen)) tbody tr{transition:background-color .14s ease}
+.content:not(:has(.dashboard-screen)) tbody tr:hover{background:#10281f}
+.content:not(:has(.dashboard-screen)) .table-wrap{overscroll-behavior-x:contain}
+.sidebar-backdrop{display:none}
+@media(min-width:901px) and (max-width:1150px){
+  .global-search{flex:1 1 220px;width:auto;max-width:360px;min-width:170px}
+  .app-main>header>div{gap:14px}
+  .dashboard-grid{grid-template-columns:minmax(0,1fr)}
+  .site-distribution{grid-template-columns:minmax(120px,180px) minmax(0,1fr);gap:16px}
+}
+@media(max-width:900px){
+  .sidebar-backdrop{position:fixed;inset:0 0 0 264px;z-index:20;display:block;width:auto;height:100%;border:0;background:#020b08a8;backdrop-filter:blur(2px)}
+  .global-search{flex:1 1 0;width:auto;max-width:488px;min-width:0}
+  .app-main>header>div:last-child{gap:8px}
+}
+@media(max-width:600px){
+  .app-main>header>div:last-child{gap:4px}
+  .global-search{max-width:none}
+  .content:not(:has(.dashboard-screen)) .page-heading{align-items:flex-start}
+  .content:not(:has(.dashboard-screen)) .page-heading .primary{width:100%}
+  .site-distribution{grid-template-columns:minmax(0,1fr)}
+}

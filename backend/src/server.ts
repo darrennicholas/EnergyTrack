@@ -21,7 +21,7 @@ import { estimateEmissions, estimateEmissionsByYear } from './emissions.js'
 import { evaluateAlerts, evaluateScheduledAlerts } from './alerts.js'
 import { promoteFreshMeters, sweepMeterHealth } from './meter-health.js'
 import { readingIdentity } from './shared/reading-identity.js'
-import { multiplierAt } from './services/meter-configuration.js'
+import { multiplierAt } from './modules/ingestion/services/meter-configuration.js'
 import { detectReadingIssues } from './reading-quality.js'
 import { createPdfReport, createXlsxReport, reportColumns } from './shared/report-files.js'
 import { reportRetry } from './shared/report-retry.js'
@@ -32,10 +32,10 @@ import { isIP } from 'node:net'
 import { scanEvidence } from './shared/evidence-scanner.js'
 import { enqueueReadingRollups, processOneMeterRollup } from './rollups.js'
 import { objectStorage, objectStorageConfigured } from './shared/object-storage.js'
-import { registerDataSourceRoutes } from './routes/data-sources.js'
-import { registerReadingPreviewRoutes } from './routes/reading-preview.js'
-import { registerForecastRoutes } from './routes/forecast.js'
-import { registerAdministrationRoutes } from './routes/administration.js'
+import { registerDataSourceRoutes } from './modules/data-sources/routes/index.js'
+import { registerReadingPreviewRoutes } from './modules/ingestion/routes/reading-preview.js'
+import { registerForecastRoutes } from './modules/forecast/routes/index.js'
+import { registerAdministrationRoutes } from './modules/administration/routes/index.js'
 import { startScheduler } from './workers/scheduler.js'
 import { AssignmentRequiredError, InvitationConflictError, InvalidRoleError, LastAdminError } from './shared/errors.js'
 
@@ -182,16 +182,16 @@ async function lockIngestionMeters(tx: Prisma.TransactionClient, organizationId:
 }
 async function ingestBatch(orgId: string, readings: ReadingInput, actorId: string | null, sourceId?: string, credentialHash?: string) {
   const ids = [...new Set(readings.map(x => x.meterId))]
-  const meters = await db.meter.findMany({ where: { id: { in: ids }, organizationId: orgId, status: { not: 'RETIRED' }, site: { status: { not: 'ARCHIVED' } } } })
+  const meters = await db.meter.findMany({ where: { id: { in: ids }, organizationId: orgId, status: { not: 'RETIRED' }, site: { status: { not: 'ARCHIVED' } } }, include: { configurationVersions: { select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } })
   if (meters.length !== ids.length) throw new IngestionError('Ada meter tidak aktif atau di luar organisasi.')
   const meterMap = new Map(meters.map(m => [m.id, m])), data: Prisma.MeterReadingCreateManyInput[] = []
   for (const row of readings) {
     const meter = meterMap.get(row.meterId)!
     if (meter.unit !== row.unit) throw new IngestionError(`Unit tidak sesuai untuk meter ${meter.code}.`)
     if (row.metric && meter.metric !== row.metric) throw new IngestionError(`Metrik tidak sesuai untuk meter ${meter.code}.`)
-    const value = new Prisma.Decimal(row.value).mul(meter.multiplier)
-    if (value.gte('100000000000000')) throw new IngestionError(`Nilai untuk meter ${meter.code} terlalu besar setelah multiplier.`)
     const timestamp = new Date(row.timestamp)
+    const value = new Prisma.Decimal(row.value).mul(multiplierAt(timestamp, meter.configurationVersions, meter.multiplier))
+    if (value.gte('100000000000000')) throw new IngestionError(`Nilai untuk meter ${meter.code} terlalu besar setelah multiplier.`)
     const externalId = row.externalReadingId ? (sourceId ? `source:${sourceId}:${row.externalReadingId}` : row.externalReadingId) : readingIdentity(meter.id, timestamp, row.value, row.unit)
     data.push({ organizationId: orgId, meterId: meter.id, externalId, timestamp, rawValue: row.value, value, unit: row.unit, quality: row.quality, sourceType: sourceId ? 'API' : meter.sourceType, sourceId: sourceId ?? null, importJobId: null })
   }
@@ -367,7 +367,7 @@ api.post('/ingestion/device-readings', rateLimit({ windowMs: 60_000, limit: 60 }
     parsedRows.push({ rowNumber: index + 1, raw, parsed: parsed.data })
   }
   const meterIds = [...new Set(parsedRows.map(row => row.parsed.meterId))]
-  const meters = await db.meter.findMany({ where: { organizationId: source.organizationId, id: { in: meterIds } }, include: { site: { select: { status: true } } } }), meterById = new Map(meters.map(meter => [meter.id, meter]))
+  const meters = await db.meter.findMany({ where: { organizationId: source.organizationId, id: { in: meterIds } }, include: { site: { select: { status: true } }, configurationVersions: { select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } }), meterById = new Map(meters.map(meter => [meter.id, meter]))
   const validReadings: ReadingInput = []
   for (const item of parsedRows) {
     const meter = meterById.get(item.parsed.meterId)
@@ -375,7 +375,7 @@ api.post('/ingestion/device-readings', rateLimit({ windowMs: 60_000, limit: 60 }
     if (!meter || meter.status === 'RETIRED' || meter.site.status === 'ARCHIVED') reason = 'Meter tidak ditemukan, retired, atau site diarsipkan.'
     else if (meter.unit !== item.parsed.unit || (item.parsed.metric && meter.metric !== item.parsed.metric)) reason = 'Metric atau unit tidak sesuai konfigurasi meter.'
     else if (item.parsed.quality === 'INVALID') reason = 'Quality INVALID harus diperiksa sebelum digunakan.'
-    else if (new Prisma.Decimal(item.parsed.value).mul(meter.multiplier).gte('100000000000000')) reason = 'Nilai terlalu besar setelah multiplier.'
+    else if (new Prisma.Decimal(item.parsed.value).mul(multiplierAt(new Date(item.parsed.timestamp), meter.configurationVersions, meter.multiplier)).gte('100000000000000')) reason = 'Nilai terlalu besar setelah multiplier.'
     if (reason) rejectedRows.push({ payload: { rowNumber: item.rowNumber, sourceId: source.id, externalReadingId: item.parsed.externalReadingId ?? null, values: item.raw as Prisma.InputJsonValue }, reason })
     else validReadings.push(item.parsed)
   }
@@ -880,16 +880,16 @@ api.post('/quarantined-readings/:id/release', auth, csrf, admin, wrap(async (req
     const allowedMeterIds = Array.isArray(source?.allowedMeterIds) ? source.allowedMeterIds : []
     if (!source || !allowedMeterIds.includes(input.meterId)) return fail(res, 422, 'VALIDATION_ERROR', 'Meter tujuan tidak termasuk cakupan sumber asal.')
   }
-  const meter = await db.meter.findFirst({ where: { id: input.meterId, organizationId: org, status: { not: 'RETIRED' }, site: { status: { not: 'ARCHIVED' } } } })
+  const meter = await db.meter.findFirst({ where: { id: input.meterId, organizationId: org, status: { not: 'RETIRED' }, site: { status: { not: 'ARCHIVED' } } }, include: { configurationVersions: { select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } })
   if (!meter) return fail(res, 404, 'NOT_FOUND', 'Meter tidak ditemukan atau sudah tidak operasional.')
   if (meter.unit !== input.unit || (meter.metric === 'ENERGY_IMPORT' && input.unit !== 'kWh') || (meter.metric === 'POWER_DEMAND' && input.unit !== 'kW')) return fail(res, 422, 'VALIDATION_ERROR', 'Unit tidak sesuai dengan konfigurasi meter.')
-  const rawValue = new Prisma.Decimal(input.value), value = rawValue.mul(meter.multiplier)
+  const rawValue = new Prisma.Decimal(input.value), timestamp = new Date(input.timestamp), value = rawValue.mul(multiplierAt(timestamp, meter.configurationVersions, meter.multiplier))
   if (value.gte('100000000000000')) return fail(res, 422, 'VALIDATION_ERROR', 'Nilai terlalu besar setelah multiplier.')
   const released = await db.$transaction(async tx => {
     const locked = await tx.$queryRaw<{ status: string }[]>`SELECT "status" FROM "QuarantinedReading" WHERE "id" = ${quarantine.id}::uuid AND "organizationId" = ${org}::uuid FOR UPDATE`
     if (!locked[0] || locked[0].status !== 'OPEN') return 'CONFLICT' as const
     await lockIngestionMeters(tx, org, [meter.id])
-    const timestamp = new Date(input.timestamp), values = quarantinePayload.values && typeof quarantinePayload.values === 'object' && !Array.isArray(quarantinePayload.values) ? quarantinePayload.values as Record<string, Prisma.JsonValue> : {}, suppliedExternalId = typeof values.externalReadingId === 'string' ? values.externalReadingId : null
+    const values = quarantinePayload.values && typeof quarantinePayload.values === 'object' && !Array.isArray(quarantinePayload.values) ? quarantinePayload.values as Record<string, Prisma.JsonValue> : {}, suppliedExternalId = typeof values.externalReadingId === 'string' ? values.externalReadingId : null
     const externalId = sourceId && suppliedExternalId ? `source:${sourceId}:${suppliedExternalId}` : readingIdentity(meter.id, timestamp, rawValue.toString(), meter.unit, sourceId ? 'csv' : 'quarantine')
     const inserted = await tx.meterReading.createMany({ data: [{ organizationId: org, meterId: meter.id, externalId, timestamp, rawValue, value, unit: meter.unit, quality: 'VALID', sourceType: sourceId ? 'API' : 'CSV', sourceId, importJobId: quarantine.importJobId }], skipDuplicates: true })
     const resolved = await tx.$queryRaw<Record<string, unknown>[]>`UPDATE "QuarantinedReading" SET "status" = 'RELEASED', "resolvedAt" = CURRENT_TIMESTAMP, "resolvedBy" = ${res.locals.user.id}::uuid WHERE "id" = ${quarantine.id}::uuid AND "organizationId" = ${org}::uuid RETURNING *`
@@ -907,7 +907,7 @@ api.post('/quarantined-readings/:id/release', auth, csrf, admin, wrap(async (req
 api.post('/simulator/readings', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGER'), wrap(async (req, res) => {
   const input = z.object({ meterId: z.string().uuid(), startAt: z.string().datetime({ offset: true }), count: z.number().int().min(1).max(5000), intervalMinutes: z.union([z.literal(1), z.literal(5), z.literal(15), z.literal(30), z.literal(60)]).optional(), baseValue: z.coerce.number().finite().min(0).max(1_000_000_000), amplitude: z.coerce.number().finite().min(0).max(1_000_000).default(0) }).strict().parse(req.body)
   const orgId = res.locals.user.organizationId, startAt = new Date(input.startAt)
-  const meter = await db.meter.findFirst({ where: { id: input.meterId, organizationId: orgId, ...(res.locals.allowedSiteIds ? { siteId: { in: res.locals.allowedSiteIds } } : {}) }, include: { site: { select: { status: true } } } })
+  const meter = await db.meter.findFirst({ where: { id: input.meterId, organizationId: orgId, ...(res.locals.allowedSiteIds ? { siteId: { in: res.locals.allowedSiteIds } } : {}) }, include: { site: { select: { status: true } }, configurationVersions: { select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } })
   if (!meter) return fail(res, 404, 'NOT_FOUND', 'Meter tidak ditemukan.')
   if (meter.site.status !== 'ACTIVE' || ['RETIRED', 'MAINTENANCE'].includes(meter.status)) return fail(res, 409, 'INVALID_STATE', 'Simulator hanya dapat menulis ke meter pada site aktif yang tidak retired atau maintenance.')
   const intervalMinutes = input.intervalMinutes ?? meter.intervalMinutes
@@ -919,7 +919,7 @@ api.post('/simulator/readings', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGE
     const increment = meter.meterType === 'CUMULATIVE' ? Math.max(0.000001, input.amplitude || input.baseValue * 0.01) : 0
     const raw = meter.meterType === 'CUMULATIVE' ? input.baseValue + index * increment : Math.max(0, input.baseValue + Math.sin(index * Math.PI / 6) * input.amplitude)
     const rawValue = new Prisma.Decimal(raw.toFixed(6)), timestamp = new Date(startAt.getTime() + index * intervalMs)
-    return { organizationId: orgId, meterId: meter.id, externalId: readingIdentity(meter.id, timestamp, rawValue.toString(), meter.unit, 'sim'), sourceType: 'SIMULATOR', sourceId: null, importJobId: null as string | null, timestamp, rawValue, value: rawValue.mul(meter.multiplier), unit: meter.unit, quality: 'VALID' }
+    return { organizationId: orgId, meterId: meter.id, externalId: readingIdentity(meter.id, timestamp, rawValue.toString(), meter.unit, 'sim'), sourceType: 'SIMULATOR', sourceId: null, importJobId: null as string | null, timestamp, rawValue, value: rawValue.mul(multiplierAt(timestamp, meter.configurationVersions, meter.multiplier)), unit: meter.unit, quality: 'VALID' }
   })
   const job = await db.$transaction(async tx => {
     const created = await tx.importJob.create({ data: { organizationId: orgId, fileName: `simulator-${meter.code}-${startAt.toISOString()}.csv`, mode: 'SIMULATOR', status: 'PROCESSING', createdBy: res.locals.user.id } })
@@ -949,7 +949,7 @@ api.post('/reading-imports', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGER')
   catch { return fail(res, 422, 'INVALID_CSV', 'Format CSV tidak valid. Gunakan header meterCode,timestamp,rawValue,unit,metric,externalReadingId.') }
   if (!rows.length || rows.length > 5000) return fail(res, 422, 'VALIDATION_ERROR', 'CSV harus berisi 1–5000 baris.')
   const orgId = res.locals.user.organizationId
-  const meters = await db.meter.findMany({ where: { organizationId: orgId, code: { in: [...new Set(rows.map(r => r.meterCode).filter(Boolean))] }, status: { not: 'RETIRED' }, ...(res.locals.allowedSiteIds ? { siteId: { in: res.locals.allowedSiteIds } } : {}) } })
+  const meters = await db.meter.findMany({ where: { organizationId: orgId, code: { in: [...new Set(rows.map(r => r.meterCode).filter(Boolean))] }, status: { not: 'RETIRED' }, ...(res.locals.allowedSiteIds ? { siteId: { in: res.locals.allowedSiteIds } } : {}) }, include: { configurationVersions: { select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } })
   const byCode = new Map(meters.map(m => [m.code, m]))
   const errors: { row: number; message: string }[] = [], rejectedRows: { payload: Prisma.InputJsonObject; reason: string }[] = []
   const rejectRow = (rowNumber: number, row: Record<string, string>, message: string) => { errors.push({ row: rowNumber, message }); rejectedRows.push({ payload: { rowNumber, values: row }, reason: message }) }
@@ -967,7 +967,7 @@ api.post('/reading-imports', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGER')
     const suppliedId = row.externalReadingId?.trim()
     const externalId = suppliedId ? (input.sourceId ? `source:${input.sourceId}:${suppliedId}` : suppliedId) : readingIdentity(meter.id, time, rawValue, row.unit, input.sourceId || undefined)
     if (externalId.length > 200) { rejectRow(index + 2, row, 'External ID terlalu panjang.'); return }
-    const value = new Prisma.Decimal(rawValue).mul(meter.multiplier)
+    const value = new Prisma.Decimal(rawValue).mul(multiplierAt(time, meter.configurationVersions, meter.multiplier))
     if (value.gte('100000000000000')) { rejectRow(index + 2, row, 'Nilai setelah multiplier terlalu besar.'); return }
     valid.push({ meterId: meter.id, externalId, timestamp: time, rawValue, value, unit: row.unit })
   })
@@ -1000,13 +1000,22 @@ async function processNextImportJob() {
   try {
     const stored = candidate.errors && typeof candidate.errors === 'object' && !Array.isArray(candidate.errors) ? candidate.errors as Record<string, Prisma.JsonValue> : {}
     const queue = stored.queue && typeof stored.queue === 'object' && !Array.isArray(stored.queue) ? stored.queue as Record<string, Prisma.JsonValue> : {}
-    const valid = Array.isArray(queue.valid) ? queue.valid as unknown as { meterId: string; externalId: string; timestamp: string; rawValue: string; value: string; unit: string }[] : []
+    const valid = Array.isArray(queue.valid) ? queue.valid as unknown as { meterId: string; externalId: string; timestamp: string; rawValue: string; value?: string; unit: string }[] : []
     const rejectedRows = Array.isArray(queue.rejectedRows) ? queue.rejectedRows as unknown as { payload: Prisma.InputJsonObject; reason: string }[] : []
     const errors = Array.isArray(queue.errors) ? queue.errors as unknown as { row: number; message: string }[] : []
     const result = await db.$transaction(async tx => {
       await lockIngestionMeters(tx, candidate.organizationId, valid.map(row => row.meterId))
       const sourceId = typeof queue.sourceId === 'string' ? queue.sourceId : null
-      const inserted = await tx.meterReading.createMany({ data: valid.map(row => ({ meterId: row.meterId, externalId: row.externalId, timestamp: new Date(row.timestamp), rawValue: row.rawValue, value: new Prisma.Decimal(row.value), unit: row.unit, organizationId: candidate.organizationId, quality: 'VALID', sourceType: 'CSV', sourceId, importJobId: candidate.id })), skipDuplicates: true })
+      const meterConfigs = await tx.meter.findMany({ where: { organizationId: candidate.organizationId, id: { in: [...new Set(valid.map(row => row.meterId))] } }, select: { id: true, multiplier: true, configurationVersions: { select: { effectiveFrom: true, effectiveTo: true, multiplier: true } } } })
+      const meterConfigById = new Map(meterConfigs.map(meter => [meter.id, meter]))
+      const persistedRows = valid.map(row => {
+        const meter = meterConfigById.get(row.meterId)
+        if (!meter) throw new IngestionError('Meter impor tidak ditemukan dalam organisasi.')
+        const timestamp = new Date(row.timestamp), multiplier = multiplierAt(timestamp, meter.configurationVersions, meter.multiplier), value = new Prisma.Decimal(row.rawValue).mul(multiplier)
+        if (value.gte('100000000000000')) throw new IngestionError('Nilai impor terlalu besar setelah multiplier.')
+        return { meterId: row.meterId, externalId: row.externalId, timestamp, rawValue: row.rawValue, value, unit: row.unit, organizationId: candidate.organizationId, quality: 'VALID' as const, sourceType: 'CSV' as const, sourceId, importJobId: candidate.id }
+      })
+      const inserted = await tx.meterReading.createMany({ data: persistedRows, skipDuplicates: true })
       if (inserted.count) {
         await enqueueReadingRollups(tx, candidate.organizationId, valid.map(row => ({ meterId: row.meterId, timestamp: new Date(row.timestamp) })))
         await promoteFreshMeters(tx, candidate.organizationId, valid.map(row => ({ meterId: row.meterId, timestamp: new Date(row.timestamp), quality: 'VALID' })), candidate.createdBy)
@@ -1190,8 +1199,10 @@ api.patch('/meters/:id/status', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGE
   return ok(res, await db.meter.findUnique({ where: { id: meter.id }, include: { site: true } }))
 }))
 api.get('/assets/:id', auth, wrap(async (req, res) => {
-  const asset = await db.asset.findFirst({ where: { id: req.params.id, organizationId: res.locals.user.organizationId, ...(res.locals.allowedSiteIds ? { siteId: { in: res.locals.allowedSiteIds } } : {}) } })
-  return asset ? ok(res, asset) : fail(res, 404, 'NOT_FOUND', 'Aset tidak ditemukan.')
+  const asset = await db.asset.findFirst({ where: { id: req.params.id, organizationId: res.locals.user.organizationId, ...(res.locals.allowedSiteIds ? { siteId: { in: res.locals.allowedSiteIds } } : {}) }, include: { building: true, meters: { include: { site: { select: { name: true, timezone: true } }, readings: { where: { quality: 'VALID' }, orderBy: { timestamp: 'desc' }, take: 1, select: { timestamp: true, value: true, unit: true, quality: true } } } } } })
+  if (!asset) return fail(res, 404, 'NOT_FOUND', 'Aset tidak ditemukan.')
+  const site = await db.site.findFirst({ where: { id: asset.siteId, organizationId: asset.organizationId }, select: { id: true, name: true, timezone: true, status: true } })
+  return ok(res, { ...asset, site })
 }))
 const assetSchema = z.object({ siteId: z.string().uuid(), buildingId: z.string().uuid().optional(), code: z.string().trim().min(1).max(100), name: z.string().trim().min(2).max(200), type: z.string().trim().min(2).max(100), status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE') })
 api.post('/assets', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGER'), wrap(async (req, res) => {
@@ -1232,7 +1243,7 @@ api.patch('/assets/:id', auth, csrf, allowRoles('ADMIN', 'FACILITY_MANAGER'), wr
   return ok(res, result)
 }))
 const alertSiteScope = (ids?: string[]) => !ids ? Prisma.empty : ids.length ? Prisma.sql`AND EXISTS (SELECT 1 FROM "Meter" m WHERE m."id" = a."meterId" AND m."organizationId" = a."organizationId" AND m."siteId" IN (${Prisma.join(ids.map(id => Prisma.sql`${id}::uuid`))}))` : Prisma.sql`AND FALSE`
-api.get('/alerts', auth, wrap(async (req, res) => {const query=pageQuery(req,['triggeredAt','status'],'triggeredAt'),org=res.locals.user.organizationId,search=query.search?Prisma.sql`AND (a."message" ILIKE ${`%${query.search}%`} OR a."status" ILIKE ${`%${query.search}%`})`:Prisma.empty,where=Prisma.sql`FROM "Alert" a JOIN "AlertRule" r ON r."id"=a."ruleId" AND r."organizationId"=a."organizationId" WHERE a."organizationId"=${org}::uuid ${alertSiteScope(res.locals.allowedSiteIds)} ${search}`;const [counts,rows]=await Promise.all([db.$queryRaw<{count:bigint}[]>(Prisma.sql`SELECT COUNT(*)::bigint ${where}`),db.$queryRaw<Record<string,unknown>[]>(Prisma.sql`SELECT a.*,to_jsonb(r) AS "rule" ${where} ORDER BY ${Prisma.raw(`a."${query.sort}" ${query.direction.toUpperCase()}`)} LIMIT ${query.requested?query.pageSize:1000} OFFSET ${query.requested?(query.page-1)*query.pageSize:0}`)]);return ok(res,pageResult(rows,Number(counts[0]?.count||0),query))}))
+api.get('/alerts', auth, wrap(async (req, res) => {const query=pageQuery(req,['triggeredAt','status'],'triggeredAt'),filter=z.object({status:z.enum(['OPEN','ACKNOWLEDGED','INVESTIGATING','RESOLVED','FALSE_POSITIVE']).optional(),severity:z.enum(['LOW','MEDIUM','HIGH','CRITICAL']).optional()}).parse(req.query),org=res.locals.user.organizationId,search=query.search?Prisma.sql`AND (a."message" ILIKE ${`%${query.search}%`} OR a."status" ILIKE ${`%${query.search}%`})`:Prisma.empty,status=filter.status?Prisma.sql`AND a."status"=${filter.status}`:Prisma.empty,severity=filter.severity?Prisma.sql`AND r."severity"=${filter.severity}`:Prisma.empty,where=Prisma.sql`FROM "Alert" a JOIN "AlertRule" r ON r."id"=a."ruleId" AND r."organizationId"=a."organizationId" WHERE a."organizationId"=${org}::uuid ${alertSiteScope(res.locals.allowedSiteIds)} ${search} ${status} ${severity}`;const [counts,rows]=await Promise.all([db.$queryRaw<{count:bigint}[]>(Prisma.sql`SELECT COUNT(*)::bigint ${where}`),db.$queryRaw<Record<string,unknown>[]>(Prisma.sql`SELECT a.*,to_jsonb(r) AS "rule" ${where} ORDER BY ${Prisma.raw(`a."${query.sort}" ${query.direction.toUpperCase()}`)} LIMIT ${query.requested?query.pageSize:1000} OFFSET ${query.requested?(query.page-1)*query.pageSize:0}`)]);return ok(res,pageResult(rows,Number(counts[0]?.count||0),query))}))
 api.get('/alerts/:id', auth, wrap(async (req, res) => {
   const rows = await db.$queryRaw<Record<string, unknown>[]>(Prisma.sql`SELECT a.*, to_jsonb(r) AS "rule" FROM "Alert" a JOIN "AlertRule" r ON r."id" = a."ruleId" AND r."organizationId" = a."organizationId" WHERE a."id" = ${req.params.id}::uuid AND a."organizationId" = ${res.locals.user.organizationId}::uuid ${alertSiteScope(res.locals.allowedSiteIds)}`)
   const alert = rows[0]
@@ -1975,7 +1986,7 @@ api.get('/monitoring/summary', auth, wrap(async (req, res) => {
   const timezone = siteId ? (await db.site.findFirst({ where: { id: siteId, organizationId: orgId }, select: { timezone: true } }))?.timezone ?? 'UTC' : 'UTC'
   const peakDemandKw = peakReadings.reduce<Prisma.Decimal | null>((max, item) => !max || item.value.gt(max) ? item.value : max, null)
   const rankingGroups = new Map<string, { name: string; readings: typeof readings; prior: typeof prior }>()
-  if (input.metric === 'ENERGY_IMPORT' && !siteId && !input.meterId && !building) {
+  if (input.metric === 'ENERGY_IMPORT') {
     for (const item of [...readings, ...prior]) {
       let group = rankingGroups.get(item.meter.site.id)
       if (!group) { group = { name: item.meter.site.name, readings: [], prior: [] }; rankingGroups.set(item.meter.site.id, group) }
@@ -1984,7 +1995,7 @@ api.get('/monitoring/summary', auth, wrap(async (req, res) => {
       rankingGroups.set(item.meter.site.id, group)
     }
   }
-  const siteRanking = [...rankingGroups].map(([rankedSiteId, group]) => ({ siteId: rankedSiteId, siteName: group.name, energyKwh: Number(energyByLocalDay(group.readings, group.prior).reduce((sum, bucket) => sum + bucket.kwh, 0).toFixed(2)) })).sort((a, b) => b.energyKwh - a.energyKwh).slice(0, 5)
+  const siteRanking = [...rankingGroups].map(([rankedSiteId, group]) => ({ siteId: rankedSiteId, siteName: group.name, energyKwh: Number(energyByLocalDay(group.readings, group.prior).reduce((sum, bucket) => sum + bucket.kwh, 0).toFixed(2)) })).sort((a, b) => b.energyKwh - a.energyKwh)
   let comparison: Record<string, unknown> | null = null
   if (input.comparePrevious) {
     const duration = now.getTime() - since.getTime(), previousStart = new Date(since.getTime() - duration), previousEnd = since

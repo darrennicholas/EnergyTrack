@@ -76,6 +76,7 @@ const today = new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short',
         <p v-if="!visibleSections.length" class="mx-3 mt-3 text-[11px] text-[#91aa9e]">Menu tidak ditemukan.</p>
       </nav>
     </aside>
+    <button v-if="menu" class="sidebar-backdrop" aria-label="Tutup menu navigasi" @click="emit('update:menu', false)"></button>
     <div :class="['app-main w-full', { 'sidebar-closed': !menu }]">
       <header class="flex h-[71px] items-center justify-between border-b border-[#213d31] bg-[#0c1b16] px-4 min-[901px]:px-[31px]">
         <button class="rounded-md p-2 text-[#e6f5eb] hover:bg-[#142a22]" :aria-label="menu ? 'Tutup menu' : 'Buka menu'" :aria-expanded="menu" @click="emit('update:menu', !menu)"><Menu class="size-5" /></button>
