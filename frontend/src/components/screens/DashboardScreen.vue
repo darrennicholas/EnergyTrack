@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent, toRefs } from 'vue'
-import Button from '@/components/ui/Button.vue'
-const EnergyChart = defineAsyncComponent(() => import('@/components/data/EnergyChart.vue'))
+import Button from '../ui/Button.vue'
+const EnergyChart = defineAsyncComponent(() => import('../data/EnergyChart.vue'))
 
 const props = defineProps<{
   monitorFilters: { siteId: string; days: number; bucket: string; comparePrevious: boolean; metric: string }

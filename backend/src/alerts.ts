@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { alertBreached, alertWindow } from './alert-metrics.js'
-import { rolloverValueAt } from './cumulative.js'
+import { rolloverValueAt } from './shared/cumulative.js'
 
 type Rule = { id: string; name: string; metric: string; operator: string; threshold: Prisma.Decimal; thresholdMax: Prisma.Decimal | null; windowMinutes: number; cooldownMinutes: number; channels: unknown; assigneeId: string | null }
 

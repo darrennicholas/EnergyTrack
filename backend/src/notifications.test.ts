@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { deliverOneAlertEmail, notificationMaxAttempts, notificationRetryDelayMs } from './notifications.js'
-import { deliverEmail } from './email-delivery.js'
+import { deliverEmail } from './shared/email-delivery.js'
 import type { PrismaClient } from '@prisma/client'
 
-vi.mock('./email-delivery.js', () => ({ deliverEmail: vi.fn() }))
+vi.mock('./shared/email-delivery.js', () => ({ deliverEmail: vi.fn() }))
 
 function fakeDatabase(executeStatements: string[]) {
   const delivery = { id: 'delivery-id', organizationId: 'org-id', alertId: 'alert-id', userId: 'user-id', attemptCount: 1 }

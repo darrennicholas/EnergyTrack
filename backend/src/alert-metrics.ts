@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import { cumulativeDelta } from './cumulative.js'
+import { cumulativeDelta } from './shared/cumulative.js'
 
 export type AlertSample = { timestamp: Date; value: unknown; rolloverValue?: unknown | null }
 export type AlertMetricInput = { metric: string; meterType: string; intervalMinutes: number; start: Date; end: Date; readings: AlertSample[] }

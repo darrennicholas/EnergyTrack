@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './cumulative.js'
+import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './shared/cumulative.js'
 
 type CostReading = { meterId: string; timestamp: Date; value: unknown; unit: string; meter: { meterType: string; metric: string; rolloverValue?: unknown | null; configurationVersions?: RolloverConfiguration[]; site: { timezone: string } } }
 type RateAssignment = { meterId: string; tariffId: string; tariffName: string; unitRate: unknown; tariffType?: string; taxPercent?: unknown; fixedCharge?: unknown; timezone?: string; rates?: { startMinute: number; endMinute: number; unitRate: unknown }[]; effectiveFrom: Date; effectiveTo: Date | null }

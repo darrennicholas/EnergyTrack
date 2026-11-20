@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client'
-import { deliverEmail } from './email-delivery.js'
+import { deliverEmail } from './shared/email-delivery.js'
 
 const maxAttempts = 5
 export const notificationRetryDelayMs = (attempt: number) => 15_000 * 2 ** Math.max(0, attempt - 1)

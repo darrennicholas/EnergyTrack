@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { parse } from 'csv-parse/sync'
 import { z } from 'zod'
-import { readingIdentity } from '../reading-identity.js'
+import { readingIdentity } from '../shared/reading-identity.js'
 import { multiplierAt } from './meter-configuration.js'
 
 export type CsvPreviewRow = { meterId: string; externalId: string; timestamp: Date; rawValue: string; value: Prisma.Decimal; unit: string }

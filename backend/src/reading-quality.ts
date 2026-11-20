@@ -1,4 +1,4 @@
-import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './cumulative.js'
+import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './shared/cumulative.js'
 
 export type QualityReading = {
   meterId: string

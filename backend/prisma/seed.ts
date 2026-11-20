@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import process from 'node:process'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 const db = new PrismaClient()

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './cumulative.js'
+import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './shared/cumulative.js'
 
 export type EnergyReading = {
   meterId: string

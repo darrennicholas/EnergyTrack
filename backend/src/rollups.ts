@@ -1,8 +1,8 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
-import { cumulativeDelta, rolloverValueAt } from './cumulative.js'
+import { cumulativeDelta, rolloverValueAt } from './shared/cumulative.js'
 import { siteDate } from './cost.js'
-import { localDateStartUtc, nextLocalDate } from './local-date.js'
+import { localDateStartUtc, nextLocalDate } from './shared/local-date.js'
 import { localBucketKey } from './energy.js'
 
 export type RollupTx = Prisma.TransactionClient

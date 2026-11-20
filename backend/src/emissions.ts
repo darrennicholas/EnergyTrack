@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client'
 import { siteDate } from './cost.js'
-import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './cumulative.js'
+import { cumulativeDelta, rolloverValueAt, type RolloverConfiguration } from './shared/cumulative.js'
 
 export type Reading = { meterId: string; timestamp: Date; value: unknown; unit: string; meter: { meterType: string; metric: string; rolloverValue?: unknown | null; configurationVersions?: RolloverConfiguration[]; site: { timezone: string } } }
 export type Factor = { id: string; region: string; energySource?: string; factor: unknown; unit: string; publicationSource: string; sourceUrl: string; applicableYear: number; effectiveFrom: Date; effectiveTo: Date | null }
