@@ -2126,7 +2126,8 @@ api.get('/events', auth, (req, res) => {
 api.use((_req, res) => fail(res, 404, 'NOT_FOUND', 'Rute API tidak ditemukan.'))
 app.use('/api/v1', api)
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => { if (err instanceof ExistingAccountAuthenticationError) return fail(res, 409, 'LOGIN_REQUIRED', 'Masuk ke akun ini sebelum menerima undangan organisasi tambahan.'); if (err instanceof InvitationConflictError) return fail(res, 409, 'CONFLICT', 'Undangan tidak dapat dibuat untuk email ini.'); if (err instanceof InvalidRoleError) return fail(res, 422, 'INVALID_ROLE', 'Role tidak aktif atau bukan milik organisasi ini.'); if (err instanceof LastAdminError) return fail(res, 409, 'LAST_ADMIN', 'Organisasi harus memiliki setidaknya satu admin aktif.'); if (err instanceof AssignmentRequiredError) return fail(res, 422, 'SITE_ASSIGNMENT_REQUIRED', 'Peran ini memerlukan setidaknya satu site.'); if (err instanceof InvitationError) return fail(res, 410, 'INVITATION_INVALID', 'Undangan tidak valid, telah digunakan, dicabut, atau kedaluwarsa.'); if (err instanceof SourceRevokedError) return fail(res, 401, 'INVALID_SOURCE', 'Kunci sumber tidak valid.'); if (err instanceof IngestionError) return fail(res, 422, 'VALIDATION_ERROR', err.message); if (err instanceof ZodError) return res.status(422).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Periksa kembali data.', fields: err.flatten().fieldErrors } }); if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === 'P2002' || (err.code === 'P2010' && err.meta?.code === '23505'))) return fail(res, 409, 'CONFLICT', 'Kode sudah digunakan.'); logEvent('error', 'unhandled_api_error', { error: err }); return fail(res, 500, 'INTERNAL_ERROR', 'Terjadi kesalahan pada server.') })
-if (backgroundWorkersEnabled) {
+const startBackgroundWorkers = () => {
+  if (!backgroundWorkersEnabled) return
   // Recurring background jobs. Driven by BullMQ + Redis when REDIS_URL is set (per FSD section 2),
   // otherwise by in-process interval polling. Each task is idempotent and DB claim-locked.
   void startScheduler([
@@ -2140,4 +2141,16 @@ if (backgroundWorkersEnabled) {
     { name: 'meter_rollup_worker', everyMs: 1_000, run: () => processOneMeterRollup(db) }
   ], logEvent).catch(error => logEvent('error', 'scheduler_start_failed', { error }))
 }
-if (process.env.WORKER_ONLY !== '1') app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', () => logEvent('info', 'api_ready', { host: process.env.HOST || '127.0.0.1', port: Number(process.env.PORT || 3000) }))
+if (process.env.WORKER_ONLY === '1') startBackgroundWorkers()
+else {
+  const port = Number(process.env.PORT || 3000), host = process.env.HOST || '127.0.0.1'
+  const server = app.listen(port, host, () => {
+    logEvent('info', 'api_ready', { host, port })
+    startBackgroundWorkers()
+  })
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    logEvent('error', 'api_listen_failed', { host, port, code: error.code, message: error.message })
+    if (error.code === 'EADDRINUSE') console.error('Port ' + port + ' is already in use. Stop the existing backend before starting another.')
+    process.exitCode = 1
+  })
+}
