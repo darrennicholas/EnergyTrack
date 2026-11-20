@@ -36,6 +36,7 @@ import { registerDataSourceRoutes } from './routes/data-sources.js'
 import { registerReadingPreviewRoutes } from './routes/reading-preview.js'
 import { registerForecastRoutes } from './routes/forecast.js'
 import { registerAdministrationRoutes } from './routes/administration.js'
+import { startScheduler } from './workers/scheduler.js'
 import { AssignmentRequiredError, InvitationConflictError, InvalidRoleError, LastAdminError } from './errors.js'
 
 declare module 'express-session' { interface SessionData { userId?: string; organizationId?: string; csrf?: string } }
@@ -1023,10 +1024,7 @@ async function processNextImportJob() {
     logEvent('error', 'reading_import_failed', { jobId: candidate.id, organizationId: candidate.organizationId, error })
   }
 }
-if (backgroundWorkersEnabled) {
-  const importQueueTimer = setInterval(() => { void processNextImportJob().catch(error => logEvent('error', 'reading_import_queue_poll_failed', { error })) }, 1_000)
-  importQueueTimer.unref()
-}
+
 api.get('/assets', auth, wrap(async (req, res) => { const query=pageQuery(req,['code','name','type','status'],'code'),where={organizationId:res.locals.user.organizationId,...(res.locals.allowedSiteIds?{siteId:{in:res.locals.allowedSiteIds}}:{}),...(query.search?{OR:[{code:{contains:query.search,mode:'insensitive' as const}},{name:{contains:query.search,mode:'insensitive' as const}},{type:{contains:query.search,mode:'insensitive' as const}}]}:{})};const [total,rows]=await Promise.all([db.asset.count({where}),db.asset.findMany({where,skip:query.requested?(query.page-1)*query.pageSize:undefined,take:query.requested?query.pageSize:undefined,include:{building:true,meters:{select:{id:true,code:true,status:true,metric:true,unit:true}}},orderBy:{[query.sort]:query.direction}})]);return ok(res,pageResult(rows,total,query)) }))
 api.get('/sites/:id', auth, wrap(async (req, res) => {
   const site = await db.site.findFirst({ where: { id: req.params.id, organizationId: res.locals.user.organizationId, ...(res.locals.allowedSiteIds ? { AND: [{ id: { in: res.locals.allowedSiteIds } }] } : {}) }, include: { meters: { include: { asset: true } }, buildings: { include: { assets: true } }, manager: { select: { id: true, fullName: true, email: true } } } })
@@ -2118,50 +2116,17 @@ api.use((_req, res) => fail(res, 404, 'NOT_FOUND', 'Rute API tidak ditemukan.'))
 app.use('/api/v1', api)
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => { if (err instanceof ExistingAccountAuthenticationError) return fail(res, 409, 'LOGIN_REQUIRED', 'Masuk ke akun ini sebelum menerima undangan organisasi tambahan.'); if (err instanceof InvitationConflictError) return fail(res, 409, 'CONFLICT', 'Undangan tidak dapat dibuat untuk email ini.'); if (err instanceof InvalidRoleError) return fail(res, 422, 'INVALID_ROLE', 'Role tidak aktif atau bukan milik organisasi ini.'); if (err instanceof LastAdminError) return fail(res, 409, 'LAST_ADMIN', 'Organisasi harus memiliki setidaknya satu admin aktif.'); if (err instanceof AssignmentRequiredError) return fail(res, 422, 'SITE_ASSIGNMENT_REQUIRED', 'Peran ini memerlukan setidaknya satu site.'); if (err instanceof InvitationError) return fail(res, 410, 'INVITATION_INVALID', 'Undangan tidak valid, telah digunakan, dicabut, atau kedaluwarsa.'); if (err instanceof SourceRevokedError) return fail(res, 401, 'INVALID_SOURCE', 'Kunci sumber tidak valid.'); if (err instanceof IngestionError) return fail(res, 422, 'VALIDATION_ERROR', err.message); if (err instanceof ZodError) return res.status(422).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Periksa kembali data.', fields: err.flatten().fieldErrors } }); if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === 'P2002' || (err.code === 'P2010' && err.meta?.code === '23505'))) return fail(res, 409, 'CONFLICT', 'Kode sudah digunakan.'); logEvent('error', 'unhandled_api_error', { error: err }); return fail(res, 500, 'INTERNAL_ERROR', 'Terjadi kesalahan pada server.') })
 if (backgroundWorkersEnabled) {
-  let healthSweepRunning = false
-  const healthTimer = setInterval(() => {
-    if (healthSweepRunning) return
-    healthSweepRunning = true
-    void sweepMeterHealth(db).catch(error => logEvent('error', 'meter_health_sweep_failed', { error })).finally(() => { healthSweepRunning = false })
-  }, 60_000)
-  healthTimer.unref()
-  let alertSweepRunning = false
-  const alertTimer = setInterval(() => {
-    if (alertSweepRunning) return
-    alertSweepRunning = true
-    void evaluateScheduledAlerts(db).catch(error => logEvent('error', 'scheduled_alert_evaluation_failed', { error })).finally(() => { alertSweepRunning = false })
-  }, 60_000)
-  alertTimer.unref()
-  let reportWorkerRunning = false
-  const reportTimer = setInterval(() => {
-    if (reportWorkerRunning) return
-    reportWorkerRunning = true
-    void processOneReportJob().catch(error => logEvent('error', 'report_export_worker_poll_failed', { error })).finally(() => { reportWorkerRunning = false })
-  }, 5_000)
-  reportTimer.unref()
-  const retentionTimer = setInterval(() => { void expireReportArtifacts().catch(error => logEvent('error', 'report_retention_failed', { error })) }, 6 * 60 * 60 * 1000)
-  retentionTimer.unref()
-  void expireReportArtifacts().catch(error => logEvent('error', 'report_retention_failed', { error }))
-  let notificationWorkerRunning = false
-  const notificationTimer = setInterval(() => {
-    if (notificationWorkerRunning) return
-    notificationWorkerRunning = true
-    void deliverOneAlertEmail(db).catch(error => logEvent('error', 'notification_delivery_worker_poll_failed', { error })).finally(() => { notificationWorkerRunning = false })
-  }, 5_000)
-  notificationTimer.unref()
-  let webhookWorkerRunning = false
-  const webhookTimer = setInterval(() => {
-    if (webhookWorkerRunning) return
-    webhookWorkerRunning = true
-    void processOneWebhookEvent().catch(error => logEvent('error', 'webhook_outbox_worker_failed', { error })).finally(() => { webhookWorkerRunning = false })
-  }, 1_000)
-  webhookTimer.unref()
-  let rollupWorkerRunning = false
-  const rollupTimer = setInterval(() => {
-    if (rollupWorkerRunning) return
-    rollupWorkerRunning = true
-    void processOneMeterRollup(db).catch(error => logEvent('error', 'meter_rollup_worker_failed', { error })).finally(() => { rollupWorkerRunning = false })
-  }, 1_000)
-  rollupTimer.unref()
+  // Recurring background jobs. Driven by BullMQ + Redis when REDIS_URL is set (per FSD section 2),
+  // otherwise by in-process interval polling. Each task is idempotent and DB claim-locked.
+  void startScheduler([
+    { name: 'reading_import_queue', everyMs: 1_000, run: () => processNextImportJob() },
+    { name: 'meter_health_sweep', everyMs: 60_000, run: () => sweepMeterHealth(db) },
+    { name: 'scheduled_alert_evaluation', everyMs: 60_000, run: () => evaluateScheduledAlerts(db) },
+    { name: 'report_export_worker', everyMs: 5_000, run: () => processOneReportJob() },
+    { name: 'report_retention', everyMs: 6 * 60 * 60 * 1000, run: () => expireReportArtifacts(), runOnStart: true },
+    { name: 'notification_delivery_worker', everyMs: 5_000, run: () => deliverOneAlertEmail(db) },
+    { name: 'webhook_outbox_worker', everyMs: 1_000, run: () => processOneWebhookEvent() },
+    { name: 'meter_rollup_worker', everyMs: 1_000, run: () => processOneMeterRollup(db) }
+  ], logEvent).catch(error => logEvent('error', 'scheduler_start_failed', { error }))
 }
 if (process.env.WORKER_ONLY !== '1') app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', () => logEvent('info', 'api_ready', { host: process.env.HOST || '127.0.0.1', port: Number(process.env.PORT || 3000) }))
